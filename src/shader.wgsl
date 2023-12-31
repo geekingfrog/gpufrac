@@ -13,6 +13,9 @@ struct View {
 @group(0) @binding(0)
 var<uniform> view: View;
 
+@group(1) @binding(0)
+var<uniform> julia_constant: vec2f;
+
 struct VertexOutput {
     // must return @builtin(position)
     @builtin(position) position: vec4<f32>,
@@ -51,11 +54,10 @@ fn fs_mandelbrot(in: VertexOutput) -> @location(0) vec4<f32> {
 fn fs_julia(in: VertexOutput) -> @location(0) vec4<f32> {
     let ratio = view.size_px.y / view.size_px.x;
     var c = in.clip_position + view.clip_center;
-    c = vec2f(c.x, c.y * ratio) / view.zoom;
-    var z = vec2f(0.0);
+    var z = vec2f(c.x, c.y * ratio) / view.zoom;
     let max = 255;
     for (var i = 0; i < max; i++) {
-        z = vec2f(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
+        z = vec2f(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + julia_constant;
         if z.x * z.x + z.y * z.y > 4.0 {
             return vec4f(f32(i) / f32(max), 0.0, 0.0, 1.0);
         }

@@ -71,7 +71,7 @@ impl State {
     async fn new(cmd: Command, window: Window) -> Self {
         let window_size = window.inner_size();
         let view = View {
-            clip_center: [-0.3, 0.0],
+            clip_center: [0.0, 0.0],
             size_px: [window_size.width as _, window_size.height as _],
             zoom: 0.6,
             _offset: 0.0,
