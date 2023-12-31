@@ -218,12 +218,12 @@ impl State {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("render pipeline layout"),
-                bind_group_layouts: &[&view_bind_group_layout],
+                bind_group_layouts: &[&view_bind_group_layout, &julia_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
         let fragment_entry_point = match cmd {
-            Command::Mandelbrot => "fs_mandlebrot",
+            Command::Mandelbrot => "fs_mandelbrot",
             Command::Julia { .. } => "fs_julia",
         };
 
