@@ -1,4 +1,6 @@
 use anyhow::Context;
+use clap::Parser;
+use std::str::FromStr;
 use wgpu::util::DeviceExt;
 use winit::{
     event::{Event, WindowEvent},
@@ -58,7 +60,7 @@ struct State {
 }
 
 impl State {
-    async fn new(window: Window) -> Self {
+    async fn new(cmd: Command, window: Window) -> Self {
         let window_size = window.inner_size();
         let view = View {
             clip_center: [-0.3, 0.0],
@@ -275,10 +277,10 @@ impl State {
     }
 }
 
-async fn run() -> anyhow::Result<()> {
+async fn run(cmd: Command) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     let window = WindowBuilder::new().build(&event_loop)?;
-    let mut state = State::new(window).await;
+    let mut state = State::new(cmd, window).await;
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop
         .run(move |loop_event, elwt| match loop_event {
@@ -304,6 +306,54 @@ async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn main() {
-    pollster::block_on(run()).expect("run!");
+#[derive(clap::Parser)]
+struct Opts {
+    #[command(subcommand)]
+    command: OptsCommand,
+}
+
+#[derive(Clone, clap::Subcommand)]
+enum OptsCommand {
+    Mandelbrot,
+    Julia {
+        /// constant to use, as 2 comma separated floats: -0.5251993,-0.5251993
+        c: String,
+    },
+}
+
+enum Command {
+    Mandelbrot,
+    Julia {
+        /// julia constant to use
+        c: [f32; 2],
+    },
+}
+
+impl TryFrom<OptsCommand> for Command {
+    type Error = anyhow::Error;
+    fn try_from(value: OptsCommand) -> Result<Self, Self::Error> {
+        match value {
+            OptsCommand::Mandelbrot => Ok(Command::Mandelbrot),
+            OptsCommand::Julia { c } => {
+                let mut s = c.split(',');
+                let cr = s.next();
+                let ci = s.next();
+                match (cr, ci) {
+                    (Some(cr), Some(ci)) => {
+                        let cr = f32::from_str(cr)?;
+                        let ci = f32::from_str(ci)?;
+                        Ok(Command::Julia { c: [cr, ci] })
+                    }
+                    _ => Err(anyhow::anyhow!("Invalid constant, example: -0.52,0.21")),
+                }
+            }
+        }
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let opts = Opts::parse();
+    let cmd: Command = opts.command.try_into().context("Parse command")?;
+    pollster::block_on(run(cmd)).expect("run!");
+    Ok(())
 }
