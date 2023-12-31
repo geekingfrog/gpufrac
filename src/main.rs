@@ -43,6 +43,12 @@ struct View {
     _offset: f32,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct JuliaConstant {
+    c: [f32; 2],
+}
+
 struct State {
     device: wgpu::Device,
     config: wgpu::SurfaceConfiguration,
@@ -53,6 +59,8 @@ struct State {
     view: View,
     view_buffer: wgpu::Buffer,
     view_bind_group: wgpu::BindGroup,
+    julia_constant: Option<[f32; 2]>,
+    julia_bind_group: wgpu::BindGroup,
     // The window must be declared after the surface so
     // it gets dropped after it as the surface contains
     // unsafe references to the window's resources.
@@ -167,12 +175,57 @@ impl State {
             }],
         });
 
+        let julia_constant = match cmd {
+            Command::Mandelbrot => None,
+            Command::Julia { c } => Some(c),
+        };
+
+        let cst = match &cmd {
+            Command::Mandelbrot => JuliaConstant { c: [0.0, 0.0] },
+            Command::Julia { c } => JuliaConstant { c: c.clone() },
+        };
+
+        let julia_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("julia uniform buffer"),
+            contents: bytemuck::cast_slice(&[cst]),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+        });
+
+        let julia_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("julia bind group layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let julia_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("julia bind group"),
+            layout: &julia_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: julia_buffer.as_entire_binding(),
+            }],
+        });
+
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("render pipeline layout"),
                 bind_group_layouts: &[&view_bind_group_layout],
                 push_constant_ranges: &[],
             });
+
+        let fragment_entry_point = match cmd {
+            Command::Mandelbrot => "fs_mandlebrot",
+            Command::Julia { .. } => "fs_julia",
+        };
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("render pipeline"),
@@ -184,7 +237,7 @@ impl State {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: fragment_entry_point,
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
                     blend: Some(wgpu::BlendState::REPLACE),
@@ -218,6 +271,8 @@ impl State {
             view,
             view_buffer,
             view_bind_group,
+            julia_constant,
+            julia_bind_group,
             surface,
             window,
         }
@@ -265,6 +320,9 @@ impl State {
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_bind_group(0, &self.view_bind_group, &[]);
+            if let Some(_c) = self.julia_constant {
+                render_pass.set_bind_group(1, &self.julia_bind_group, &[]);
+            };
             // self.queue
             //     .write_buffer(&self.view_buffer, 0, bytemuck::cast_slice(&[self.view]));
             render_pass.draw(0..3, 0..1);
@@ -288,9 +346,9 @@ async fn run(cmd: Command) -> anyhow::Result<()> {
                 event: WindowEvent::RedrawRequested,
                 ..
             } => {
-                let start = std::time::Instant::now();
+                // let start = std::time::Instant::now();
                 state.render().expect("render!");
-                println!("render took {:?}", start.elapsed());
+                // println!("render took {:?}", start.elapsed());
             }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
