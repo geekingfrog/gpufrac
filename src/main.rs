@@ -68,11 +68,18 @@ struct State {
 }
 
 impl State {
-    async fn new(cmd: Command, window: Window) -> Self {
-        let window_size = window.inner_size();
+    async fn new(run_opts: RunOpts, window: Window) -> Self {
+        let (width, height) = match run_opts.resolution {
+            Some(r) => (r[0], r[1]),
+            None => {
+                let window_size = window.inner_size();
+                (window_size.width, window_size.height)
+            }
+        };
+
         let view = View {
             clip_center: [0.0, 0.0],
-            size_px: [window_size.width as _, window_size.height as _],
+            size_px: [width as _, height as _],
             zoom: 0.6,
             _offset: 0.0,
         };
@@ -117,8 +124,8 @@ impl State {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
-            width: window_size.width,
-            height: window_size.height,
+            width,
+            height,
             present_mode: surface_caps.present_modes[0],
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
@@ -175,12 +182,12 @@ impl State {
             }],
         });
 
-        let julia_constant = match cmd {
+        let julia_constant = match run_opts.command {
             Command::Mandelbrot => None,
             Command::Julia { c } => Some(c),
         };
 
-        let cst = match &cmd {
+        let cst = match &run_opts.command {
             Command::Mandelbrot => JuliaConstant { c: [0.0, 0.0] },
             Command::Julia { c } => JuliaConstant { c: c.clone() },
         };
@@ -222,7 +229,7 @@ impl State {
                 push_constant_ranges: &[],
             });
 
-        let fragment_entry_point = match cmd {
+        let fragment_entry_point = match run_opts.command {
             Command::Mandelbrot => "fs_mandelbrot",
             Command::Julia { .. } => "fs_julia",
         };
@@ -320,9 +327,7 @@ impl State {
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_bind_group(0, &self.view_bind_group, &[]);
-            if let Some(_c) = self.julia_constant {
-                render_pass.set_bind_group(1, &self.julia_bind_group, &[]);
-            };
+            render_pass.set_bind_group(1, &self.julia_bind_group, &[]);
             // self.queue
             //     .write_buffer(&self.view_buffer, 0, bytemuck::cast_slice(&[self.view]));
             render_pass.draw(0..3, 0..1);
@@ -335,10 +340,10 @@ impl State {
     }
 }
 
-async fn run(cmd: Command) -> anyhow::Result<()> {
+async fn run(run_opts: RunOpts) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     let window = WindowBuilder::new().build(&event_loop)?;
-    let mut state = State::new(cmd, window).await;
+    let mut state = State::new(run_opts, window).await;
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop
         .run(move |loop_event, elwt| match loop_event {
@@ -366,6 +371,9 @@ async fn run(cmd: Command) -> anyhow::Result<()> {
 
 #[derive(clap::Parser)]
 struct Opts {
+    /// resolution of the image, for example 1024x748
+    #[arg(short, long)]
+    resolution: Option<String>,
     #[command(subcommand)]
     command: OptsCommand,
 }
@@ -377,6 +385,38 @@ enum OptsCommand {
         /// constant to use, as 2 comma separated floats: -0.5251993,-0.5251993
         c: String,
     },
+}
+
+struct RunOpts {
+    command: Command,
+    resolution: Option<[u32; 2]>,
+}
+
+impl TryFrom<Opts> for RunOpts {
+    type Error = anyhow::Error;
+    fn try_from(opts: Opts) -> Result<Self, Self::Error> {
+        let resolution = match opts.resolution {
+            Some(raw) => {
+                let mut split = raw.split('x');
+                let w = split.next();
+                let h = split.next();
+                match (w, h) {
+                    (Some(w), Some(h)) => {
+                        let w = u32::from_str_radix(w, 10)?;
+                        let h = u32::from_str_radix(h, 10)?;
+                        Some([w, h])
+                    }
+                    _ => anyhow::bail!("Invalid resolution, example: 1024x768"),
+                }
+            }
+            None => None,
+        };
+        let command = opts.command.try_into()?;
+        Ok(RunOpts {
+            resolution,
+            command,
+        })
+    }
 }
 
 enum Command {
@@ -411,7 +451,7 @@ impl TryFrom<OptsCommand> for Command {
 
 fn main() -> anyhow::Result<()> {
     let opts = Opts::parse();
-    let cmd: Command = opts.command.try_into().context("Parse command")?;
-    pollster::block_on(run(cmd)).expect("run!");
+    let run_opts = opts.try_into().context("parse command")?;
+    pollster::block_on(run(run_opts)).expect("run!");
     Ok(())
 }
