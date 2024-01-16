@@ -2,11 +2,8 @@ use anyhow::Context;
 use clap::Parser;
 use std::str::FromStr;
 use wgpu::util::DeviceExt;
-use winit::{
-    event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-    window::{Window, WindowBuilder},
-};
+
+const U32_SIZE: u32 = std::mem::size_of::<u32>() as u32;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -51,31 +48,23 @@ struct JuliaConstant {
 
 struct State {
     device: wgpu::Device,
-    config: wgpu::SurfaceConfiguration,
     queue: wgpu::Queue,
     render_pipeline: wgpu::RenderPipeline,
-    surface: wgpu::Surface,
+    texture: wgpu::Texture,
+    texture_view: wgpu::TextureView,
+    texture_size: (u32, u32),
+    output_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     view: View,
     view_buffer: wgpu::Buffer,
     view_bind_group: wgpu::BindGroup,
     julia_constant: Option<[f32; 2]>,
     julia_bind_group: wgpu::BindGroup,
-    // The window must be declared after the surface so
-    // it gets dropped after it as the surface contains
-    // unsafe references to the window's resources.
-    window: Window,
 }
 
 impl State {
-    async fn new(run_opts: RunOpts, window: Window) -> Self {
-        let (width, height) = match run_opts.resolution {
-            Some(r) => (r[0], r[1]),
-            None => {
-                let window_size = window.inner_size();
-                (window_size.width, window_size.height)
-            }
-        };
+    async fn new(run_opts: RunOpts) -> Self {
+        let (width, height) = (1600, 900);
 
         let view = View {
             clip_center: [0.0, 0.0],
@@ -89,53 +78,48 @@ impl State {
             ..Default::default()
         });
 
-        let surface = unsafe { instance.create_surface(&window) }.unwrap();
-
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
                 force_fallback_adapter: false,
-                compatible_surface: Some(&surface),
+                compatible_surface: None,
             })
             .await
             .expect("request adapter");
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    features: wgpu::Features::empty(),
-                    limits: wgpu::Limits::default(),
-                },
-                None,
-            )
+            .request_device(&Default::default(), None)
             .await
             .expect("request device");
 
-        let surface_caps = surface.get_capabilities(&adapter);
-
-        let surface_format = surface_caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(surface_caps.formats[0]);
-
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
-            width,
-            height,
-            present_mode: surface_caps.present_modes[0],
-            alpha_mode: surface_caps.alpha_modes[0],
-            view_formats: vec![],
+        let texture_size = (1600u32, 900u32);
+        let texture_desc = wgpu::TextureDescriptor {
+            label: Some("texture descriptor"),
+            size: wgpu::Extent3d {
+                width: texture_size.0,
+                height: texture_size.1,
+                depth_or_array_layers: 1,
+            },
+            view_formats: &[],
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
         };
-        surface.configure(&device, &config);
+        let texture = device.create_texture(&texture_desc);
+        let texture_view = texture.create_view(&Default::default());
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
-        });
+        let output_buffer_size =
+            (U32_SIZE * texture_size.0 * texture_size.1) as wgpu::BufferAddress;
+        let output_buffer_desc = wgpu::BufferDescriptor {
+            size: output_buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            //      ^ this tells wpgu that we want to read this buffer from the cpu
+            label: None,
+            mapped_at_creation: false,
+        };
+        let output_buffer = device.create_buffer(&output_buffer_desc);
 
         // It seems naga doesn't accept hardcoding the vertices in the shader directly
         // and using the index to get the position, so instead pass the vertices
@@ -234,6 +218,13 @@ impl State {
             Command::Julia { .. } => "fs_julia",
         };
 
+        let mut compiler = shaderc::Compiler::new().unwrap();
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("wgsl shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+        });
+
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("render pipeline"),
             layout: Some(&render_pipeline_layout), // where to put the bind groups for texture, camera and stuff
@@ -246,7 +237,7 @@ impl State {
                 module: &shader,
                 entry_point: fragment_entry_point,
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
+                    format: texture_desc.format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -271,8 +262,11 @@ impl State {
 
         State {
             device,
-            config,
             queue,
+            texture,
+            texture_view,
+            texture_size,
+            output_buffer,
             render_pipeline,
             vertex_buffer,
             view,
@@ -280,25 +274,10 @@ impl State {
             view_bind_group,
             julia_constant,
             julia_bind_group,
-            surface,
-            window,
         }
     }
 
-    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        if new_size.width > 0 && new_size.height > 0 {
-            self.view.size_px = new_size.into();
-            self.config.width = new_size.width;
-            self.config.height = new_size.height;
-            self.surface.configure(&self.device, &self.config);
-        }
-    }
-
-    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let output = self.surface.get_current_texture()?;
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+    async fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -315,7 +294,7 @@ impl State {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("render pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &self.texture_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(clear_color),
@@ -333,39 +312,64 @@ impl State {
             render_pass.draw(0..3, 0..1);
         }
 
+        encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                aspect: wgpu::TextureAspect::All,
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &self.output_buffer,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(U32_SIZE * self.texture_size.0),
+                    rows_per_image: Some(self.texture_size.1),
+                },
+            },
+            wgpu::Extent3d {
+                width: self.texture_size.0,
+                height: self.texture_size.1,
+                depth_or_array_layers: 1,
+            },
+        );
+
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+
+        // We need to scope the mapping variables so that we can
+        // unmap the buffer
+        {
+            let buffer_slice = self.output_buffer.slice(..);
+
+            // NOTE: We have to create the mapping THEN device.poll() before await
+            // the future. Otherwise the application will freeze.
+            let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+            buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+                tx.send(result).unwrap();
+            });
+            self.device.poll(wgpu::Maintain::Wait);
+            rx.receive().await.unwrap().unwrap();
+
+            let data = buffer_slice.get_mapped_range();
+
+            use image::{ImageBuffer, Rgba};
+            let buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(
+                self.texture_size.0,
+                self.texture_size.1,
+                data,
+            )
+            .unwrap();
+            buffer.save("image.png").unwrap();
+        }
+        self.output_buffer.unmap();
 
         Ok(())
     }
 }
 
 async fn run(run_opts: RunOpts) -> anyhow::Result<()> {
-    let event_loop = EventLoop::new()?;
-    let window = WindowBuilder::new().build(&event_loop)?;
-    let mut state = State::new(run_opts, window).await;
-    event_loop.set_control_flow(ControlFlow::Wait);
-    event_loop
-        .run(move |loop_event, elwt| match loop_event {
-            Event::WindowEvent {
-                event: WindowEvent::RedrawRequested,
-                ..
-            } => {
-                // let start = std::time::Instant::now();
-                state.render().expect("render!");
-                // println!("render took {:?}", start.elapsed());
-            }
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => elwt.exit(),
-            Event::WindowEvent {
-                event: WindowEvent::Resized(size),
-                ..
-            } => state.resize(size),
-            _ => (),
-        })
-        .context("event loop run")?;
+    let mut state = State::new(run_opts).await;
+    state.render().await?;
     Ok(())
 }
 
