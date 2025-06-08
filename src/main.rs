@@ -73,7 +73,7 @@ impl State {
             _offset: 0.0,
         };
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
@@ -88,7 +88,7 @@ impl State {
             .expect("request adapter");
 
         let (device, queue) = adapter
-            .request_device(&Default::default(), None)
+            .request_device(&Default::default())
             .await
             .expect("request device");
 
@@ -218,7 +218,7 @@ impl State {
             Command::Julia { .. } => "fs_julia",
         };
 
-        let mut compiler = shaderc::Compiler::new().unwrap();
+        // let mut compiler = shaderc::Compiler::new().unwrap();
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wgsl shader"),
@@ -230,12 +230,14 @@ impl State {
             layout: Some(&render_pipeline_layout), // where to put the bind groups for texture, camera and stuff
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
                 buffers: &[Vertex::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: fragment_entry_point,
+                entry_point: Some(fragment_entry_point),
+                compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: texture_desc.format,
                     blend: Some(wgpu::BlendState::REPLACE),
@@ -258,6 +260,7 @@ impl State {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
+            cache: None,
         });
 
         State {
@@ -313,15 +316,15 @@ impl State {
         }
 
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 aspect: wgpu::TextureAspect::All,
                 texture: &self.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: &self.output_buffer,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(U32_SIZE * self.texture_size.0),
                     rows_per_image: Some(self.texture_size.1),
@@ -347,7 +350,7 @@ impl State {
             buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
                 tx.send(result).unwrap();
             });
-            self.device.poll(wgpu::Maintain::Wait);
+            self.device.poll(wgpu::PollType::Wait).expect("polling device");
             rx.receive().await.unwrap().unwrap();
 
             let data = buffer_slice.get_mapped_range();
