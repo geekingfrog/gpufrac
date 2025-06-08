@@ -40,6 +40,45 @@ struct View {
     _offset: f32,
 }
 
+/// to store a bunch of useful data related to the dimension and size
+/// of the textures and buffers
+#[derive(Debug, Clone)]
+struct Dimensions {
+    /// the size in px of the image
+    resolution: [u32; 2],
+    /// the actual texture size. May differ from resolution for alignment
+    texture_size: [u32; 2],
+    /// used with copy_texture_to_buffer
+    bytes_per_row: u32,
+}
+
+impl Dimensions {
+    fn from_resolution(resolution: [u32; 2]) -> Self {
+        let [width, height] = resolution;
+
+        // To avoid
+        // Bytes per row does not respect `COPY_BYTES_PER_ROW_ALIGNMENT`
+        // the output buffer size must be properly padded. See
+        // https://docs.rs/wgpu-types/latest/wgpu_types/constant.COPY_BYTES_PER_ROW_ALIGNMENT.html
+        // Also see this PR for a project that had the same problem:
+        // https://github.com/ggez/ggez/pull/1210/files
+
+        let bytes_per_px = U32_SIZE;
+        let unpadded_bytes_per_row = width * bytes_per_px;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let row_padding = (align - unpadded_bytes_per_row % align) % align;
+        let padded_bytes_per_row = unpadded_bytes_per_row + row_padding;
+
+        let texture_width = width + (row_padding / bytes_per_px);
+
+        Self {
+            resolution,
+            texture_size: [texture_width, height],
+            bytes_per_row: padded_bytes_per_row,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct JuliaConstant {
@@ -47,12 +86,12 @@ struct JuliaConstant {
 }
 
 struct State {
+    dimensions: Dimensions,
     device: wgpu::Device,
     queue: wgpu::Queue,
     render_pipeline: wgpu::RenderPipeline,
     texture: wgpu::Texture,
     texture_view: wgpu::TextureView,
-    texture_size: (u32, u32),
     output_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     view: View,
@@ -64,11 +103,11 @@ struct State {
 
 impl State {
     async fn new(run_opts: RunOpts) -> Self {
-        let (width, height) = (1600, 900);
+        let dimensions = Dimensions::from_resolution(run_opts.resolution.unwrap_or([1600, 900]));
 
         let view = View {
             clip_center: [0.0, 0.0],
-            size_px: [width as _, height as _],
+            size_px: [dimensions.resolution[0] as _, dimensions.resolution[1] as _],
             zoom: 0.6,
             _offset: 0.0,
         };
@@ -92,12 +131,11 @@ impl State {
             .await
             .expect("request device");
 
-        let texture_size = (1600u32, 900u32);
         let texture_desc = wgpu::TextureDescriptor {
             label: Some("texture descriptor"),
             size: wgpu::Extent3d {
-                width: texture_size.0,
-                height: texture_size.1,
+                width: dimensions.texture_size[0],
+                height: dimensions.texture_size[1],
                 depth_or_array_layers: 1,
             },
             view_formats: &[],
@@ -109,11 +147,10 @@ impl State {
         };
         let texture = device.create_texture(&texture_desc);
         let texture_view = texture.create_view(&Default::default());
+        let output_buffer_size = dimensions.bytes_per_row * dimensions.texture_size[1] * U32_SIZE;
 
-        let output_buffer_size =
-            (U32_SIZE * texture_size.0 * texture_size.1) as wgpu::BufferAddress;
         let output_buffer_desc = wgpu::BufferDescriptor {
-            size: output_buffer_size,
+            size: output_buffer_size as _,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             //      ^ this tells wpgu that we want to read this buffer from the cpu
             label: None,
@@ -264,11 +301,11 @@ impl State {
         });
 
         State {
+            dimensions,
             device,
             queue,
             texture,
             texture_view,
-            texture_size,
             output_buffer,
             render_pipeline,
             vertex_buffer,
@@ -326,13 +363,14 @@ impl State {
                 buffer: &self.output_buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(U32_SIZE * self.texture_size.0),
-                    rows_per_image: Some(self.texture_size.1),
+                    // bytes_per_row: Some(U32_SIZE * self.texture_size.0),
+                    bytes_per_row: Some(self.dimensions.bytes_per_row),
+                    rows_per_image: Some(self.dimensions.texture_size[1]),
                 },
             },
             wgpu::Extent3d {
-                width: self.texture_size.0,
-                height: self.texture_size.1,
+                width: self.dimensions.texture_size[0],
+                height: self.dimensions.texture_size[1],
                 depth_or_array_layers: 1,
             },
         );
@@ -350,15 +388,17 @@ impl State {
             buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
                 tx.send(result).unwrap();
             });
-            self.device.poll(wgpu::PollType::Wait).expect("polling device");
+            self.device
+                .poll(wgpu::PollType::Wait)
+                .expect("polling device");
             rx.receive().await.unwrap().unwrap();
 
             let data = buffer_slice.get_mapped_range();
 
             use image::{ImageBuffer, Rgba};
             let buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(
-                self.texture_size.0,
-                self.texture_size.1,
+                self.dimensions.texture_size[0],
+                self.dimensions.texture_size[1],
                 data,
             )
             .unwrap();
