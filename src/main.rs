@@ -257,9 +257,11 @@ impl State {
 
         // let mut compiler = shaderc::Compiler::new().unwrap();
 
+        let shader_src =
+            std::fs::read_to_string("src/shader.wgsl").expect("cannot read shader source");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wgsl shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
         });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
