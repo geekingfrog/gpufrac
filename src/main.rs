@@ -1,6 +1,7 @@
 use anyhow::Context;
 use clap::Parser;
-use std::str::FromStr;
+use rand::Rng;
+use std::{f32::consts::PI, str::FromStr};
 use wgpu::util::DeviceExt;
 
 const U32_SIZE: u32 = std::mem::size_of::<u32>() as u32;
@@ -106,8 +107,8 @@ impl State {
         let dimensions = Dimensions::from_resolution(run_opts.resolution.unwrap_or([1600, 900]));
 
         let view = View {
-            clip_center: [-0.5, 0.0],
-            clip_width: 2.5,
+            clip_center: [0.0, 0.0],
+            clip_width: 3.5,
             _offset: 0.0,
             size_px: [dimensions.resolution[0] as _, dimensions.resolution[1] as _],
         };
@@ -203,15 +204,15 @@ impl State {
             }],
         });
 
-        // let julia_constant = match run_opts.command {
-        //     Command::Mandelbrot => None,
-        //     Command::Julia { c } => Some(c),
-        // };
-
         let cst = match &run_opts.command {
             Command::Mandelbrot => JuliaConstant { c: [0.0, 0.0] },
-            Command::Julia { c } => JuliaConstant { c: c.clone() },
+            Command::Julia { c: Some(c) } => JuliaConstant { c: c.clone() },
+            Command::Julia { c: None } => JuliaConstant {
+                c: guess_julia_constant(&view),
+            },
         };
+
+        println!("constant used: {cst:?}");
 
         let julia_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("julia uniform buffer"),
@@ -412,6 +413,70 @@ impl State {
     }
 }
 
+/// attempt to find a random julia constant that can lead to some interesting
+/// set. These are usually at the boundaries of the mandelbrot set.
+/// From a center point, shoot a ray in a random direction, then sample this
+/// ray, looking for points where there are many variations in the vicinity
+/// when looking at the mandelbrot set
+fn guess_julia_constant(view: &View) -> [f32; 2] {
+    let mut rng = rand::rng();
+    // first, get a random angle. everything is symmetrical with regard to the
+    // x-axis. Also, there are more interesting shapes when y > 0, so
+    // don't go for the full range
+    let angle = rng.random_range(0.2..(PI - 0.2));
+    let angle = if rng.random_bool(0.5) { angle } else { -angle };
+    let limit = 250;
+
+    // for each point, we need to look in the vicinity.
+    // Some math to go from pixel coordinate to logical coordinate
+    // and get a step that correspond to 1px
+    let ratio = view.size_px[1] / view.size_px[0];
+    let step = 2.0 / (view.clip_width * view.size_px[0]);
+    let step = [step, ratio / step];
+
+    // the ray starts from (-0.25, 0), and we only sample the arc where
+    // 0.25 <= distance(start) <= 1 since it covers most of the boundaries
+    let c = (1..150)
+        .into_iter()
+        .map(|_| {
+            let d: f32 = rng.random_range(0.25..1.0);
+            let x = -0.25 + angle.cos() * d;
+            let y = angle.sin() * d;
+
+            let mut dist: f32 = 0.0;
+            let v0 = mandelbrot([x, y], limit) as f32;
+            for i in -2..2 {
+                for j in -2..2 {
+                    let v: f32 =
+                        mandelbrot([x + step[0] * i as f32, y + step[1] * j as f32], limit) as f32;
+                    dist = dist + (v0 - v).abs();
+                }
+            }
+
+            dist = dist / 9.0;
+
+            ([x, y], dist)
+        })
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .unwrap();
+
+    c.0
+}
+
+fn mandelbrot(c: [f32; 2], limit: i32) -> i32 {
+    let mut i = 0;
+    let mut z = (0.0, 0.0);
+    let [x, y] = c;
+    while i < limit {
+        z = (z.0 * z.0 - z.1 * z.1 + x, 2.0 * z.0 * z.1 + y);
+        if z.0 * z.0 + z.1 * z.1 > 4.0 {
+            return i;
+        }
+        i += 1;
+    }
+    -1
+}
+
 async fn run(run_opts: RunOpts) -> anyhow::Result<()> {
     let mut state = State::new(run_opts).await;
     state.render().await?;
@@ -432,7 +497,7 @@ enum OptsCommand {
     Mandelbrot,
     Julia {
         /// constant to use, as 2 comma separated floats: -0.5251993,-0.5251993
-        c: String,
+        c: Option<String>,
     },
 }
 
@@ -472,7 +537,7 @@ enum Command {
     Mandelbrot,
     Julia {
         /// julia constant to use
-        c: [f32; 2],
+        c: Option<[f32; 2]>,
     },
 }
 
@@ -482,16 +547,20 @@ impl TryFrom<OptsCommand> for Command {
         match value {
             OptsCommand::Mandelbrot => Ok(Command::Mandelbrot),
             OptsCommand::Julia { c } => {
-                let mut s = c.split(',');
-                let cr = s.next();
-                let ci = s.next();
-                match (cr, ci) {
-                    (Some(cr), Some(ci)) => {
-                        let cr = f32::from_str(cr)?;
-                        let ci = f32::from_str(ci)?;
-                        Ok(Command::Julia { c: [cr, ci] })
+                if let Some(s) = c {
+                    let mut s = s.split(',');
+                    let cr = s.next();
+                    let ci = s.next();
+                    match (cr, ci) {
+                        (Some(cr), Some(ci)) => {
+                            let cr = f32::from_str(cr)?;
+                            let ci = f32::from_str(ci)?;
+                            Ok(Command::Julia { c: Some([cr, ci]) })
+                        }
+                        _ => Err(anyhow::anyhow!("Invalid constant, example: -0.52,0.21")),
                     }
-                    _ => Err(anyhow::anyhow!("Invalid constant, example: -0.52,0.21")),
+                } else {
+                    Ok(Command::Julia { c: None })
                 }
             }
         }
