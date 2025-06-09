@@ -31,23 +31,32 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     return out;
 }
 
+// how many iteration before assuming the point is in the set
+const MAX_I: i32 = 255;
+
+fn mandelbrot(in: VertexOutput) -> i32 {
+    let ratio = view.size_px.y / view.size_px.x;
+    var c = in.clip_position + view.clip_center;
+    c = vec2f(c.x, c.y * ratio) / view.zoom;
+    var z = vec2f(0.0);
+    for (var i = 0; i < MAX_I; i++) {
+        z = vec2f(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
+        if z.x * z.x + z.y * z.y > 4.0 {
+            return i;
+        }
+    }
+    return -1;
+}
 
 // fragment shader
 
 @fragment
 fn fs_mandelbrot(in: VertexOutput) -> @location(0) vec4<f32> {
-    let ratio = view.size_px.y / view.size_px.x;
-    var c = in.clip_position + view.clip_center;
-    c = vec2f(c.x, c.y * ratio) / view.zoom;
-    var z = vec2f(0.0);
-    let max = 255;
-    for (var i = 0; i < max; i++) {
-        z = vec2f(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
-        if z.x * z.x + z.y * z.y > 4.0 {
-            return vec4f(f32(i) / f32(max), 0.0, 0.0, 1.0);
-        }
+    let i = mandelbrot(in);
+    if i <= 0 {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    return vec4f(f32(i) / f32(MAX_I), 0.0, 0.0, 1.0);
 }
 
 @fragment
@@ -55,11 +64,10 @@ fn fs_julia(in: VertexOutput) -> @location(0) vec4<f32> {
     let ratio = view.size_px.y / view.size_px.x;
     var c = in.clip_position + view.clip_center;
     var z = vec2f(c.x, c.y * ratio) / view.zoom;
-    let max = 255;
-    for (var i = 0; i < max; i++) {
+    for (var i = 0; i < MAX_I; i++) {
         z = vec2f(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + julia_constant;
         if z.x * z.x + z.y * z.y > 4.0 {
-            return vec4f(f32(i) / f32(max), 0.0, 0.0, 1.0);
+            return vec4f(f32(i) / f32(MAX_I), 0.0, 0.0, 1.0);
         }
     }
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
