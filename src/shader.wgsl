@@ -6,8 +6,8 @@ struct VertexInput {
 
 struct View {
     clip_center: vec2<f32>,
+    clip_width: f32,
     size_px: vec2<f32>,
-    zoom: f32,
 }
 
 @group(0) @binding(0)
@@ -34,10 +34,10 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 // how many iteration before assuming the point is in the set
 const MAX_I: i32 = 255;
 
-fn mandelbrot(in: VertexOutput) -> i32 {
+fn mandelbrot(pos: vec2<f32>) -> i32 {
     let ratio = view.size_px.y / view.size_px.x;
-    var c = in.clip_position + view.clip_center;
-    c = vec2f(c.x, c.y * ratio) / view.zoom;
+    var c = pos + view.clip_center;
+    c = vec2f(c.x, c.y * ratio) * view.clip_width / 2;
     var z = vec2f(0.0);
     for (var i = 0; i < MAX_I; i++) {
         z = vec2f(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
@@ -52,18 +52,40 @@ fn mandelbrot(in: VertexOutput) -> i32 {
 
 @fragment
 fn fs_mandelbrot(in: VertexOutput) -> @location(0) vec4<f32> {
-    let i = mandelbrot(in);
-    if i <= 0 {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    // if abs(in.clip_position.x * -0.5 - in.clip_position.y) <= 0.001 {
+    //     return vec4<f32>(0, 1, 0, 1.0);
+    // }
+
+    let ratio = view.size_px.y / view.size_px.x;
+    let step = vec2f(1, ratio) / (view.clip_width * view.size_px.x / 2);
+    var sum: f32 = 0;
+    var c = mandelbrot(in.clip_position);
+    let bound = 1;
+
+    for (var i = -bound; i < bound; i++) {
+        for (var j = -bound; j < bound; j++) {
+            let pos = in.clip_position + vec2f(f32(i) * step.x, f32(j) * step.y);
+            // let pos = in.clip_position + vec2f(f32(i)/10,f32(j)/10);
+            sum += f32(abs(c - mandelbrot(pos)));
+        }
     }
-    return vec4f(f32(i) / f32(MAX_I), 0.0, 0.0, 1.0);
+
+    sum = sum / f32((bound + 1) * (bound + 1));
+    if sum >= 0.95 { sum = 1; } else { sum = 0; }
+    return vec4f(sum, 0.0, 0.0, 1.0);
+
+    // let i = mandelbrot(in.clip_position);
+    // if i <= 0 {
+    //     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    // }
+    // return vec4f(f32(i) / f32(MAX_I), 0.0, 0.0, 1.0);
 }
 
 @fragment
 fn fs_julia(in: VertexOutput) -> @location(0) vec4<f32> {
     let ratio = view.size_px.y / view.size_px.x;
     var c = in.clip_position + view.clip_center;
-    var z = vec2f(c.x, c.y * ratio) / view.zoom;
+    var z = vec2f(c.x, c.y * ratio) * view.clip_width / 2;
     for (var i = 0; i < MAX_I; i++) {
         z = vec2f(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + julia_constant;
         if z.x * z.x + z.y * z.y > 4.0 {

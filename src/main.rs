@@ -35,9 +35,9 @@ impl From<[f32; 2]> for Vertex {
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct View {
     clip_center: [f32; 2],
-    size_px: [f32; 2],
-    zoom: f32,
+    clip_width: f32,
     _offset: f32,
+    size_px: [f32; 2],
 }
 
 /// to store a bunch of useful data related to the dimension and size
@@ -94,10 +94,10 @@ struct State {
     texture_view: wgpu::TextureView,
     output_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
-    view: View,
-    view_buffer: wgpu::Buffer,
+    // view: View,
+    // view_buffer: wgpu::Buffer,
     view_bind_group: wgpu::BindGroup,
-    julia_constant: Option<[f32; 2]>,
+    // julia_constant: Option<[f32; 2]>,
     julia_bind_group: wgpu::BindGroup,
 }
 
@@ -106,10 +106,10 @@ impl State {
         let dimensions = Dimensions::from_resolution(run_opts.resolution.unwrap_or([1600, 900]));
 
         let view = View {
-            clip_center: [0.0, 0.0],
-            size_px: [dimensions.resolution[0] as _, dimensions.resolution[1] as _],
-            zoom: 0.6,
+            clip_center: [-0.5, 0.0],
+            clip_width: 2.5,
             _offset: 0.0,
+            size_px: [dimensions.resolution[0] as _, dimensions.resolution[1] as _],
         };
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
@@ -203,10 +203,10 @@ impl State {
             }],
         });
 
-        let julia_constant = match run_opts.command {
-            Command::Mandelbrot => None,
-            Command::Julia { c } => Some(c),
-        };
+        // let julia_constant = match run_opts.command {
+        //     Command::Mandelbrot => None,
+        //     Command::Julia { c } => Some(c),
+        // };
 
         let cst = match &run_opts.command {
             Command::Mandelbrot => JuliaConstant { c: [0.0, 0.0] },
@@ -311,10 +311,10 @@ impl State {
             output_buffer,
             render_pipeline,
             vertex_buffer,
-            view,
-            view_buffer,
+            // view,
+            // view_buffer,
             view_bind_group,
-            julia_constant,
+            // julia_constant,
             julia_bind_group,
         }
     }
