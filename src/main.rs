@@ -108,7 +108,7 @@ impl State {
 
         let view = View {
             clip_center: [0.0, 0.0],
-            clip_width: 3.5,
+            clip_width: run_opts.clip_width,
             _offset: 0.0,
             size_px: [dimensions.resolution[0] as _, dimensions.resolution[1] as _],
         };
@@ -488,6 +488,8 @@ struct Opts {
     /// resolution of the image, for example 1024x748
     #[arg(short, long)]
     resolution: Option<String>,
+    #[arg(long, default_value_t=3.5)]
+    clip_width: f32,
     #[command(subcommand)]
     command: OptsCommand,
 }
@@ -503,6 +505,7 @@ enum OptsCommand {
 
 struct RunOpts {
     command: Command,
+    clip_width: f32,
     resolution: Option<[u32; 2]>,
 }
 
@@ -528,6 +531,7 @@ impl TryFrom<Opts> for RunOpts {
         let command = opts.command.try_into()?;
         Ok(RunOpts {
             resolution,
+            clip_width: opts.clip_width,
             command,
         })
     }
